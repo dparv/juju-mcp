@@ -1,0 +1,131 @@
+# This file configures Charmcraft.
+# See https://documentation.ubuntu.com/charmcraft/stable/reference/files/charmcraft-yaml-file/
+type: charm
+name: juju-mcp
+title: Juju MCP Server
+summary: Expose a Model Context Protocol (MCP) server for a Juju controller.
+description: |
+  A subordinate charm that runs a Model Context Protocol (MCP) server next to a
+  Juju controller, so that AI assistants and other MCP clients can inspect and
+  (optionally) operate the models managed by that controller.
+
+  The charm is deployed as a subordinate of the `juju-controller` application
+  in the controller model. It discovers the local controller API endpoint and
+  CA certificate, and drives the Juju CLI through Jubilant, logged in as a
+  dedicated Juju user supplied through a Juju user secret. It serves MCP over
+  streamable HTTP protected by a bearer token (TLS by default).
+
+  Tools are read-only by default. Mutating tools (run actions, change config,
+  deploy, scale, integrate, exec) are only exposed when `allow-write` is set,
+  and are always limited by the permissions of the configured Juju user.
+
+subordinate: true
+
+platforms:
+  ubuntu@22.04:amd64:
+  ubuntu@22.04:arm64:
+  ubuntu@24.04:amd64:
+  ubuntu@24.04:arm64:
+
+assumes:
+  - juju >= 3.6
+
+parts:
+  charm:
+    plugin: uv
+    source: .
+    build-snaps:
+      - astral-uv
+
+requires:
+  controller:
+    interface: juju-info
+    scope: container
+    limit: 1
+    description: |
+      Attach to the `juju-controller` principal application, for example:
+      juju integrate -m controller juju-mcp controller
+
+peers:
+  mcp-peers:
+    interface: juju_mcp_peers
+
+config:
+  options:
+    credentials-secret:
+      description: |
+        URI of a Juju user secret holding the credentials of the Juju user the
+        MCP server logs in as. The secret must have `username` and `password`
+        keys. The MCP server can do whatever this user is allowed to do, so
+        create a dedicated user with the minimum access required.
+
+          juju add-user mcp
+          juju change-user-password mcp
+          juju grant mcp read <model>            # or write/admin
+          juju add-secret -m controller mcp-credentials username=mcp password=...
+          juju grant-secret -m controller mcp-credentials juju-mcp
+          juju config -m controller juju-mcp credentials-secret=<secret-uri>
+      type: secret
+    allow-write:
+      description: |
+        Expose mutating MCP tools (run actions, set config, deploy, scale,
+        integrate, remove, exec). When false only read-only tools are served.
+      default: false
+      type: boolean
+    port:
+      description: TCP port the MCP server listens on.
+      default: 8765
+      type: int
+    bind-address:
+      description: |
+        Address the MCP server binds to. Defaults to all addresses.
+      default: "0.0.0.0"
+      type: string
+    external-hostname:
+      description: |
+        Hostname or IP address clients use to reach the server, e.g. an
+        OpenStack floating IP or a DNS name. It is used in the URL returned by
+        `get-connection-info` and added to the self-signed certificate.
+        Defaults to the unit's ingress address.
+      default: ""
+      type: string
+    tls-secret:
+      description: |
+        Optional URI of a Juju user secret with `certificate` and `private-key`
+        keys (PEM) used to serve HTTPS. When unset, a self-signed certificate
+        is generated; retrieve it with the `get-connection-info` action.
+      type: secret
+    insecure-http:
+      description: |
+        Serve plain HTTP instead of HTTPS. Only use this when a TLS-terminating
+        proxy sits in front of the server or it is bound to localhost.
+      default: false
+      type: boolean
+    controller-endpoints:
+      description: |
+        Comma-separated list of controller API endpoints (host:port). When
+        unset, the local controller is discovered from the agent configuration.
+      default: ""
+      type: string
+    juju-channel:
+      description: |
+        Snap channel of the Juju CLI (the `juju` snap) that the MCP server
+        drives through Jubilant, e.g. `3.6/stable`. Defaults to the
+        controller's major.minor version on the stable risk.
+      default: ""
+      type: string
+    log-level:
+      description: |
+        Log level of the MCP server: debug, info, warning, error or critical.
+      default: "info"
+      type: string
+
+actions:
+  get-connection-info:
+    description: |
+      Return the MCP endpoint URL, bearer token and CA certificate needed by
+      MCP clients, plus an example client configuration snippet.
+  rotate-token:
+    description: |
+      Generate a new bearer token for the MCP server. Existing clients must be
+      reconfigured. Must be run on the leader unit.
