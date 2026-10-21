@@ -20,6 +20,7 @@ import json
 import logging
 import os
 import re
+import socket
 import subprocess
 import tempfile
 from pathlib import Path
@@ -36,6 +37,8 @@ CONTROLLER_NAME = "mcp"
 COMMAND_TIMEOUT = 60.0
 #: Extra time granted to the CLI process beyond a command's own --wait.
 WAIT_SLACK = 30.0
+#: TCP connect timeout when checking that some controller endpoint is up.
+PROBE_TIMEOUT = 3.0
 
 _UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
 # "unit-app-0: 2026-10-21 14:37:37 INFO juju.worker.uniter ran ..."
@@ -123,6 +126,7 @@ class JujuClient:
         controller_uuid: str = "",
         cli_binary: str = "juju",
         juju_data: str | Path,
+        probe: bool = True,
     ):
         self._endpoints = list(endpoints)
         self._cacert = cacert
@@ -131,6 +135,7 @@ class JujuClient:
         self._controller_uuid = controller_uuid
         self._cli_binary = cli_binary
         self._juju_data = Path(juju_data)
+        self._probe = probe
 
     @property
     def username(self) -> str:
@@ -170,8 +175,27 @@ class JujuClient:
         (self._juju_data / "models.yaml").unlink(missing_ok=True)
         os.environ["JUJU_DATA"] = str(self._juju_data)
 
+    def check_reachable(self) -> None:
+        """Fail fast if no controller API endpoint accepts TCP connections.
+
+        The Juju CLI retries API dials for up to 10 minutes, which would turn
+        a down controller into a slow timeout instead of a clear error.
+        """
+        if not self._probe:
+            return
+        errors = []
+        for endpoint in self._endpoints:
+            host, _, port = endpoint.rpartition(":")
+            try:
+                with socket.create_connection((host.strip("[]"), int(port)), PROBE_TIMEOUT):
+                    return
+            except (OSError, ValueError) as e:
+                errors.append(f"{endpoint}: {e}")
+        raise JujuClientError("cannot reach the controller API (" + "; ".join(errors) + ")")
+
     def juju(self, model: str | None = None, timeout: float = COMMAND_TIMEOUT) -> jubilant.Juju:
         """Return a Jubilant client, optionally bound to a resolved model."""
+        self.check_reachable()
         target = f"{CONTROLLER_NAME}:{model}" if model else None
         return _Juju(model=target, cli_binary=self._cli_binary, timeout=timeout)
 

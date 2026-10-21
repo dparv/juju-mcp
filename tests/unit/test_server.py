@@ -249,6 +249,7 @@ def fake_cli(tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> JujuCli
         controller_uuid="c-uuid",
         cli_binary=str(script),
         juju_data=tmp_path / "juju-data",
+        probe=False,
     )
     client.setup()
     return client
@@ -451,3 +452,42 @@ def test_summarize_status():
         }
     ]
     assert summary["machines"]["0"]["agent-status"]["current"] == "started"
+
+
+def test_unreachable_controller_fails_fast(tmp_path: pathlib.Path):
+    import socket
+    import time
+
+    # Reserve a port with nothing listening on it.
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        port = sock.getsockname()[1]
+    client = JujuClient(
+        endpoints=[f"127.0.0.1:{port}"],
+        cacert="CA",
+        username="mcp",
+        password="pw",
+        cli_binary="/nonexistent/juju",
+        juju_data=tmp_path / "jd",
+    )
+    start = time.monotonic()
+    with pytest.raises(JujuClientError, match="cannot reach the controller API"):
+        client.model_summaries()
+    assert time.monotonic() - start < 2
+
+
+def test_reachable_controller_passes_probe(tmp_path: pathlib.Path):
+    import socket
+
+    with socket.socket() as server:
+        server.bind(("127.0.0.1", 0))
+        server.listen()
+        port = server.getsockname()[1]
+        client = JujuClient(
+            endpoints=["127.0.0.1:1", f"127.0.0.1:{port}"],
+            cacert="CA",
+            username="mcp",
+            password="pw",
+            juju_data=tmp_path / "jd",
+        )
+        client.check_reachable()  # first endpoint refused, second accepts

@@ -96,7 +96,9 @@ clients authenticate with a bearer token. Tools are **read-only by default**.
 * A Juju **machine** controller (LXD, MAAS, OpenStack, AWS, manual, ...),
   version 3.6 or later. Kubernetes controllers don't support subordinate
   charms.
-* Controller machines running Ubuntu 22.04 or 24.04 (amd64 or arm64).
+* Controller machines running Ubuntu 22.04, 24.04 or 26.04 (amd64 or arm64).
+  A subordinate must match its principal's base, so deploy the `.charm` built
+  for your controller machines' base.
 * The controller machines must be able to install the `juju` snap, from the
   Snap Store or a Snap Store Proxy in air-gapped environments.
 * Network access from your MCP clients to the controller machines on the MCP
@@ -180,8 +182,14 @@ juju deploy ./juju-mcp_ubuntu@24.04-amd64.charm juju-mcp   # or: juju deploy juj
 juju integrate juju-mcp:controller controller
 ```
 
-Pick the `.charm` that matches the controller machines' base and architecture.
-Charmcraft builds one per platform.
+Pick the `.charm` that matches the controller machines' base and architecture,
+for example `juju-mcp_ubuntu@22.04-amd64.charm` for 22.04 controllers.
+Charmcraft builds one file per platform. To check the base of your controller
+machines:
+
+```bash
+juju machines -m controller --format=json | jq -r '.machines[].base | "\(.name)@\(.channel)"'
+```
 
 With an HA controller (`juju enable-ha`), every controller machine gets a
 `juju-mcp` unit automatically. All units share the same bearer token.
@@ -722,10 +730,15 @@ tests/integration/          # Jubilant tests against a real controller
 
 ```bash
 uvx --with tox-uv tox -e format,lint,unit       # format, ruff/codespell/pyright, unit tests
-charmcraft pack                                  # build .charm files for all platforms
-charmcraft pack --platform ubuntu@24.04:amd64    # or a single platform
+charmcraft pack                                  # every platform buildable on this host
+charmcraft pack --platform ubuntu@26.04:amd64    # or a single platform
 uvx --with tox-uv tox -e integration             # needs a bootstrapped machine controller
 ```
+
+Supported platforms are `ubuntu@{22.04,24.04,26.04}:{amd64,arm64}`. Each
+`.charm` bundles compiled Python wheels for its base's Python (3.10, 3.12 or
+3.14), so charms build natively. Build the arm64 charms on an arm64 host, or
+with `charmcraft remote-build` on Launchpad.
 
 Run the server locally against any controller for development:
 
